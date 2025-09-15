@@ -1,0 +1,14 @@
+data/external/*
+data/interim/*
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Ignore playground file
+test.ipynb
+
+# Ignore MACOS system files
+.DS_Store
