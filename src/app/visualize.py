@@ -401,10 +401,3 @@ def render():
 
     _download_buttons(filtered_df, label_prefix=f"Download {kind_labels.get(selected_kind, selected_kind)} filtered")
 
-    with st.expander("USI examples", expanded=False):
-        usi_columns = [c for c in ("LibraryUsi", "SuspectUsi") if c in filtered_df.columns]
-        if usi_columns:
-            head_df = filtered_df[usi_columns].drop_duplicates().head(10)
-            st.dataframe(head_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No USI columns found.")

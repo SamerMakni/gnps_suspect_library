@@ -623,7 +623,7 @@ def _generate_suspects(
     return suspects
 
 def _load_unimod_tables_rows(unimod_file: str):
-    """Parse UNIMOD *tables* XML (unimod_tables_1) and return rows with DeltaMass + title."""
+    """Parse UNIMOD XML (unimod_tables_1) and return rows with DeltaMass + title."""
     rows = []
     if not (unimod_file and os.path.exists(unimod_file)):
         logger.warning("UNIMOD XML not found at %s", unimod_file)
@@ -639,10 +639,9 @@ def _load_unimod_tables_rows(unimod_file: str):
             continue
         attrs = el.attrib
 
-        # Your probe showed these keys:
         mono = attrs.get("mono_mass")
         if mono is None:
-            # fallback to average mass if you *really* want to (optional):
+
             mono = attrs.get("avge_mass")
 
         title = attrs.get("full_name") or attrs.get("code_name") or "UNIMOD modification"
@@ -656,9 +655,9 @@ def _load_unimod_tables_rows(unimod_file: str):
 
         rows.append({
             "DeltaMass": dm,
-            "AtomicDifference": [],          # (optional: derive from 'composition' if you want)
+            "AtomicDifference": [],          
             "Rationale": f"UNIMOD: {title}",
-            "Priority": 250,                 # keep lower than curated CSV
+            "Priority": 250,           
         })
         count += 1
 
