@@ -8,7 +8,7 @@ st.title("GNPS Suspects")
 from app import generate, visualize
 
 
-tab_generate, tab_visualize = st.tabs(["Generate", "Visualize"])
+tab_generate, tab_visualize = st.tabs(["Update Suspects", "Visualize"])
 
 with tab_generate:
     generate.render()
