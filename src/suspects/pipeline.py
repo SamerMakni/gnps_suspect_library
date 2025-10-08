@@ -173,7 +173,146 @@ logger = logging.getLogger("suspect_library")
 #         len(suspects_unique),
 #     )
 
-def generate_suspects(filenames_tsv: pd.DataFrame, report_cb=None) -> str:
+def generate_suspects(filenames_tsv: pd.DataFrame | str | os.PathLike | None, report_cb=None) -> str:
+    """
+    Build suspects (unfiltered → grouped → unique) **from cached backbone**:
+      config.cache_dir / {ids.parquet, pairs.parquet, clusters.parquet}
+
+    Optionally merge extra IDs (GNPS library-search TSV) passed via `filenames_tsv`
+    and *restrict* output to those extra LibraryUsi entries (same behavior as before).
+
+    Returns a human-readable final message.
+    """
+    # ---- resolve cache paths from config ----
+    cache_dir = getattr(config, "cache_dir", os.path.join(config.data_dir, "cache"))
+    p_ids      = getattr(config, "cache_ids",      os.path.join(cache_dir, "ids.parquet"))
+    p_pairs    = getattr(config, "cache_pairs",    os.path.join(cache_dir, "pairs.parquet"))
+    p_clusters = getattr(config, "cache_clusters", os.path.join(cache_dir, "clusters.parquet"))
+
+    task_id = "CACHE"  # light, deterministic tag
+    suspects_dir = os.path.join(config.data_dir, "interim")
+    os.makedirs(suspects_dir, exist_ok=True)
+
+    # 0) starting
+    _report(report_cb, "Starting (from cache)…", 0.02)
+
+    # A) load cache
+    _report(report_cb, "Loading cache (ids / pairs / clusters)…", 0.10)
+    if not (os.path.exists(p_ids) and os.path.exists(p_pairs) and os.path.exists(p_clusters)):
+        raise FileNotFoundError(
+            "Backbone cache missing. Expected files:\n"
+            f"  - {p_ids}\n  - {p_pairs}\n  - {p_clusters}\n"
+            "Run the backbone cache builder first."
+        )
+
+    ids = pd.read_parquet(p_ids)
+    pairs = pd.read_parquet(p_pairs)
+    clusters = pd.read_parquet(p_clusters)
+    msg = f"{len(ids)} ids, {len(pairs)} pairs, {len(clusters)} clusters loaded from cache"
+    logger.info(msg); _report(report_cb, msg, 0.18)
+
+    # B) extra IDs (optional)
+    library_usis_to_include = None
+    if filenames_tsv is not None:
+        _report(report_cb, "Reading extra IDs (GNPS TSV)…", 0.24)
+
+        # Accept either a path/str or a preloaded DataFrame (your _read_ids can handle DF if you changed it)
+        if isinstance(filenames_tsv, (str, os.PathLike)):
+            extra_ids = _read_ids(filenames_tsv)
+        elif isinstance(filenames_tsv, pd.DataFrame):
+            extra_ids = _read_ids(filenames_tsv)  # your updated reader
+        else:
+            raise TypeError("filenames_tsv must be a path/str or a pandas DataFrame or None")
+
+        if extra_ids is not None and len(extra_ids):
+            ids = pd.concat([ids, extra_ids], ignore_index=True, copy=False)
+            library_usis_to_include = set(extra_ids["LibraryUsi"])
+            msg = f"Extra IDs added: {len(extra_ids)} (ids total: {len(ids)})"
+            logger.info(msg); _report(report_cb, msg, 0.30)
+        else:
+            _report(report_cb, "No extra IDs found/usable.", 0.30)
+
+    # C) (optional) re-apply filters — cache was already filtered; keep off by default
+    if getattr(config, "reapply_filters_on_cache", False):
+        _report(report_cb, "Re-applying filters on cached tables…", 0.36)
+        ids = _filter_ids(ids, config.max_ppm, config.min_shared_peaks)
+        pairs = _filter_pairs(pairs, config.min_cosine)
+        clusters = _filter_clusters(clusters)
+        msg = f"After re-filter: {len(ids)} ids, {len(pairs)} pairs, {len(clusters)} clusters"
+        logger.info(msg); _report(report_cb, msg, 0.42)
+
+    # D) generate unfiltered suspects
+    _report(report_cb, "Generating unfiltered suspects…", 0.56)
+    suspects_unfiltered = _generate_suspects(ids, pairs, clusters)
+    logger.info("%d candidate unfiltered suspects generated", len(suspects_unfiltered))
+    _report(report_cb, f"{len(suspects_unfiltered)} unfiltered suspects", 0.62)
+
+    # Δm quick stats (to logger + compact UI note)
+    try:
+        dm_desc = suspects_unfiltered["DeltaMass"].describe()
+        logger.info("Δm describe:\n%s", dm_desc.to_string())
+        _report(report_cb, "Computed Δm statistics", 0.66)
+    except Exception:
+        pass
+
+    # E) group mass shifts
+    _report(report_cb, "Grouping mass shifts + annotating (UNIMOD/CSV)…", 0.74)
+    suspects_grouped = suspects_unfiltered[
+        suspects_unfiltered["DeltaMass"].abs() > config.min_delta_mz
+    ].copy()
+    suspects_grouped = _group_mass_shifts(
+        suspects_grouped,
+        _get_mass_shift_annotations(
+            config.mass_shift_annotation_url, getattr(config, "unimod_file", None)
+        ),
+        config.interval_width,
+        config.bin_width,
+        config.peak_height,
+        config.max_dist,
+    )
+    suspects_grouped = suspects_grouped.dropna(subset=["GroupDeltaMass"])
+
+    # If extra file provided, keep only those library hits (legacy behavior)
+    if library_usis_to_include is not None:
+        _report(report_cb, "Restricting to extra-IDs LibraryUsi…", 0.78)
+        suspects_grouped = suspects_grouped[
+            suspects_grouped["LibraryUsi"].isin(library_usis_to_include)
+        ]
+
+    # F) save unfiltered + grouped
+    _report(report_cb, "Writing unfiltered & grouped parquet…", 0.84)
+    unfiltered_path = os.path.join(suspects_dir, f"suspects_{task_id}_unfiltered.parquet")
+    grouped_path    = os.path.join(suspects_dir, f"suspects_{task_id}_grouped.parquet")
+    suspects_unfiltered.to_parquet(unfiltered_path, index=False)
+    suspects_grouped.to_parquet(grouped_path, index=False)
+    logger.info("%d grouped suspects saved", len(suspects_grouped))
+    _report(report_cb, f"Saved:\n• {unfiltered_path}\n• {grouped_path}", 0.88)
+
+    # G) dedupe → unique
+    _report(report_cb, "Selecting unique suspects…", 0.92)
+    suspects_unique = (
+        suspects_grouped.sort_values("Cosine", ascending=False)
+        .drop_duplicates(["CompoundName", "Adduct", "GroupDeltaMass"])
+        .sort_values("Adduct", key=_get_adduct_n_elements)
+        .drop_duplicates(["CompoundName", "SuspectUsi"])
+        .sort_values(["CompoundName", "Adduct", "GroupDeltaMass"])
+    )
+    unique_path = os.path.join(suspects_dir, f"suspects_{task_id}_unique.parquet")
+    suspects_unique.to_parquet(unique_path, index=False)
+    logger.info("%d unique suspects saved", len(suspects_unique))
+    _report(report_cb, f"Saved:\n• {unique_path}", 0.96)
+
+    final_message = (
+        "Successfully composed suspects.\n"
+        f"• Counts: {len(suspects_unfiltered):,} unfiltered → {len(suspects_grouped):,} grouped → {len(suspects_unique):,} unique.\n"
+        f"• Saved: {os.path.basename(unfiltered_path)}, {os.path.basename(grouped_path)}, {os.path.basename(unique_path)}"
+    )
+    logger.info(final_message)
+    _report(report_cb, final_message, 1.0)
+    return final_message
+
+
+def generate_suspects_(filenames_tsv: pd.DataFrame=None, report_cb=None) -> str:
     """
     Same pipeline as before. CLI logs unchanged.
     If report_cb is provided, send step-by-step messages for Streamlit.
@@ -623,7 +762,7 @@ def _generate_suspects(
     return suspects
 
 def _load_unimod_tables_rows(unimod_file: str):
-    """Parse UNIMOD XML (unimod_tables_1) and return rows with DeltaMass + title."""
+    """Parse UNIMOD *tables* XML (unimod_tables_1) and return rows with DeltaMass + title."""
     rows = []
     if not (unimod_file and os.path.exists(unimod_file)):
         logger.warning("UNIMOD XML not found at %s", unimod_file)
@@ -639,9 +778,10 @@ def _load_unimod_tables_rows(unimod_file: str):
             continue
         attrs = el.attrib
 
+        # Your probe showed these keys:
         mono = attrs.get("mono_mass")
         if mono is None:
-
+            # fallback to average mass if you *really* want to (optional):
             mono = attrs.get("avge_mass")
 
         title = attrs.get("full_name") or attrs.get("code_name") or "UNIMOD modification"
@@ -655,9 +795,9 @@ def _load_unimod_tables_rows(unimod_file: str):
 
         rows.append({
             "DeltaMass": dm,
-            "AtomicDifference": [],          
+            "AtomicDifference": [],          # (optional: derive from 'composition' if you want)
             "Rationale": f"UNIMOD: {title}",
-            "Priority": 250,           
+            "Priority": 250,                 # keep lower than curated CSV
         })
         count += 1
 

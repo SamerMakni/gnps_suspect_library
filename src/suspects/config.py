@@ -50,12 +50,12 @@ min_delta_mz = 0.5
 #   (centered around unit m/z's).
 interval_width = 1.0
 # - Delta m/z's are binned with 0.002 bin width.
-bin_width = 0.01
+bin_width = 0.002
 # - Peaks with minimum height 10 are extracted from the delta m/z histograms.
-peak_height = 2
+peak_height = 10
 # - Delta m/z's between the left and right bases of each peak and at maximum
 #   0.01 Da distance from the peak m/z's are grouped.
-max_dist = 0.02
+max_dist = 0.01
 
 # Suspect filtering:
 #

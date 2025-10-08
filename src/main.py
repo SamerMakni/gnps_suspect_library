@@ -8,10 +8,14 @@ st.title("GNPS Suspects")
 from app import generate, visualize
 
 
-tab_generate, tab_visualize = st.tabs(["Update Suspects", "Visualize"])
+tab_generate, tab_visualize, tab_export = st.tabs(["Generate", "Visualize", "Export"])
 
 with tab_generate:
     generate.render()
 
 with tab_visualize:
     visualize.render()
+
+with tab_export:
+    st.write("Export")
+    
