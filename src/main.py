@@ -5,7 +5,7 @@ st.set_page_config(page_title="GNPS Suspects Prototype", layout="centered")
 
 st.title("GNPS Suspects")
 
-from app import generate, visualize
+from app import generate, visualize, export
 
 
 tab_generate, tab_visualize, tab_export = st.tabs(["Generate", "Visualize", "Export"])
@@ -17,5 +17,5 @@ with tab_visualize:
     visualize.render()
 
 with tab_export:
-    st.write("Export")
+    export.render()
     
